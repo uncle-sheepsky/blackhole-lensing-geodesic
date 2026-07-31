@@ -1,0 +1,779 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ep4_blackhole_renewal — comp</title>
+<style>
+  html,body{margin:0;background:#05060a}
+  #cv{display:block}
+  @font-face { font-family:JetBrains;       src:url("../_fonts/JetBrainsMono.ttf") }
+  @font-face { font-family:Pretendard;      font-weight:800; src:url("../_fonts/Pretendard-ExtraBold.otf") }
+  @font-face { font-family:PretendardBlack; font-weight:900; src:url("../_fonts/Pretendard-Black.otf") }
+</style>
+<canvas id="cv" width="1080" height="1920"></canvas>
+<script src="gsap.min.js"></script>
+<script src="lens_engine.js"></script>
+<script src="geodesic.js"></script>
+<script src="infall_engine.js"></script>
+<script src="beats4.js"></script>
+<script src="code_data.js"></script>
+<script>
+/* ep4_blackhole_renewal 컴포지터.
+   · 매체 = canvas 2D + 오프스크린 WebGL2(렌징). 시간축은 __seekTo(t) 단일 진입.
+   · 결정론 = 출력이 f 의 순수함수. rAF·Date.now·Math.random·CSS transition 없음.
+   · 화면이 말하는 모든 수치는 CONTRACT(편-계약.json 파생) 또는 엔진 실측에서 나온다. */
+(function () {
+  'use strict';
+  const B = window.BEATS, LE = window.LensEngine, GE = window.Geodesic, IE = window.InfallEngine;
+  const CD = window.CODE_DATA;
+  const cv = document.getElementById('cv'), g = cv.getContext('2d');
+  const W = B.W, H = B.H, FPS = B.FPS, N = B.TOTAL_F, P = B.PAL;
+
+  // ── 계약 대조 ─────────────────────────────────────────────────────────────
+  const K = CD.CONTRACT;
+  if (K.total_frames !== N || K.fps !== FPS || K.bpm !== B.BPM || K.bars !== B.BARS)
+    throw new Error('★계약 ↔ beats4 격자 불일치');
+  const SUM = B.COMP.reduce((a, c) => a + c.len, 0);
+  if (SUM !== N) throw new Error('★컴프 길이 합 ' + SUM + ' ≠ ' + N);
+  for (let i = 1; i < B.COMP.length; i++) {
+    if (B.COMP[i].f0 !== B.COMP[i - 1].f0 + B.COMP[i - 1].len) throw new Error('★컴프 경계 불연속 C' + i);
+    const a = B.COMP[i - 1].exit, b = B.COMP[i].enter;
+    if (Math.hypot(a[0] - b[0], a[1] - b[1]) > 320) throw new Error('★G8 시선 계승 위반 C' + i);
+  }
+  for (const c of B.COMP) if (c.len - c.pEnd < 10) throw new Error('★G7 완결 여유 부족 C' + c.i);
+
+  const PX_TOTAL = W * H;                       // 광선 수 = 픽셀 수(화면이 주장하는 유일한 큰 수)
+  const RS = LE.RS, BCRIT = 1.5 * Math.sqrt(3) * RS;   // 임계 임팩트 파라미터 3√3/2 · Rs
+
+  // ── 오프스크린 렌징 ────────────────────────────────────────────────────────
+  const glcv = document.createElement('canvas'); glcv.width = W; glcv.height = H;
+  const lens = LE.create(glcv);
+
+  // ── 인폴 사전 적분(셰이더 아님) ────────────────────────────────────────────
+  const INF = IE.bake({});
+  const IST = INF.opt.startFrame;               // 인폴 베이크 0번 프레임 = 본편 f{IST}
+  // 리드 스타 = 안쪽에 닿는 프레임이 C6 한복판(f425)에 가장 가까운 별.
+  // 수기 지정이 아니라 **베이크가 낸 값**이다 — 합류 프레임도 여기서 파생한다.
+  let LEAD = 0, LEAD_DEATH = -1;
+  {
+    let best = 1e9;
+    for (let i = 0; i < INF.count; i++) {
+      let d = -1;
+      for (let f = 1; f < INF.frames; f++)
+        if (INF.alive[(f - 1) * INF.count + i] && !INF.alive[f * INF.count + i]) { d = f + IST; break; }
+      if (d < 0) continue;
+      const c = Math.abs(d - 425);
+      if (c < best) { best = c; LEAD = i; LEAD_DEATH = d; }
+    }
+    if (LEAD_DEATH < 0) LEAD_DEATH = 425;
+    B.setMergeFrame(LEAD_DEATH);
+  }
+
+  // ── 상시 모션 고정(G6 유지시간 게이트 전용) ────────────────────────────────
+  let FREEZE = false;
+  function ambF(f) { return FREEZE ? B.compAt(f).f0 : f; }
+
+  // ── 그리기 헬퍼 ────────────────────────────────────────────────────────────
+  function font(px, fam) { g.font = px + 'px ' + (fam || 'Pretendard'); }
+  function txt(s, x, y, px, col, fam, align) {
+    font(px, fam); g.fillStyle = col; g.textAlign = align || 'left'; g.textBaseline = 'alphabetic';
+    g.fillText(s, x, y);
+  }
+  function roundRect(x, y, w, h, r) {
+    g.beginPath();
+    g.moveTo(x + r, y); g.lineTo(x + w - r, y); g.quadraticCurveTo(x + w, y, x + w, y + r);
+    g.lineTo(x + w, y + h - r); g.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    g.lineTo(x + r, y + h); g.quadraticCurveTo(x, y + h, x, y + h - r);
+    g.lineTo(x, y + r); g.quadraticCurveTo(x, y, x + r, y); g.closePath();
+  }
+  function dimAll(a) { g.fillStyle = 'rgba(5,6,10,' + a + ')'; g.fillRect(0, 0, W, H); }
+
+  // ★★`shadowBlur` 는 결정론이 아니다 — SwiftShader 에서도 같은 프레임이 시크 순서에 따라
+  //   Δ4/255 로 갈렸다(실측: C0 카피 글자 65,784px · C2 점 1,940px). ep14 가 `filter:blur` 를
+  //   금지한 것과 같은 계열이다. 아래 3종으로 **전부 대체**하고 shadowBlur 는 코드에서 없앤다.
+  //   ① 글자 = 어두운 외곽선(strokeText)  ② 점 = 방사 그라디언트  ③ 선 = 넓은 반투명 밑선
+  function glowText(s, x, y, px, col, fam, align, halo) {
+    font(px, fam); g.textAlign = align || 'left'; g.textBaseline = 'alphabetic';
+    g.lineJoin = 'round'; g.lineWidth = halo || 10;
+    g.strokeStyle = 'rgba(4,5,9,0.88)'; g.strokeText(s, x, y);
+    g.fillStyle = col; g.fillText(s, x, y);
+    g.lineJoin = 'miter'; g.lineWidth = 1;
+  }
+  function glowDot(x, y, r, core, halo) {
+    const gr = g.createRadialGradient(x, y, 0, x, y, r * 3.4);
+    gr.addColorStop(0, core); gr.addColorStop(0.30, halo); gr.addColorStop(1, 'rgba(0,0,0,0)');
+    const op = g.globalCompositeOperation;
+    g.globalCompositeOperation = 'lighter';
+    g.fillStyle = gr; g.beginPath(); g.arc(x, y, r * 3.4, 0, 7); g.fill();
+    g.globalCompositeOperation = op;
+  }
+
+  // 화면 좌표 → 광선 방향(셰이더 main() 과 동일 식)
+  function dirFromPx(camObj, sx, sy) {
+    const ux = (sx - 0.5 * W) / H, uy = (0.5 * H - sy) / H;
+    const { fwd, rgt, upv, fov } = camObj;
+    const d = [fwd[0] + fov * (ux * rgt[0] + uy * upv[0]),
+               fwd[1] + fov * (ux * rgt[1] + uy * upv[1]),
+               fwd[2] + fov * (ux * rgt[2] + uy * upv[2])];
+    const n = Math.hypot(d[0], d[1], d[2]);
+    return [d[0] / n, d[1] / n, d[2] / n];
+  }
+
+  // 측지선 경로를 화면에 그린다.
+  // ★minD = 카메라에서 이만큼 떨어진 구간부터 그린다. 모든 광선은 **카메라 한 점에서** 출발하므로
+  //   가까운 구간을 다 그리면 12개가 한 점에서 터지는 폭죽으로 읽힌다(실측 f200).
+  //   블랙홀 근처(휘는 자리)만 남기면 광선들이 서로 떨어져 아치를 이룬다.
+  function strokePath(camObj, path, frac, style, width, glow, opt) {
+    const o = opt || {};
+    const minD = o.minD === undefined ? 3.0 : o.minD;
+    const maxR = o.maxR === undefined ? 24.0 : o.maxR;      // 이보다 멀어지면 그리지 않는다
+    // ★경로의 먼 쪽은 카메라 평면 뒤로 넘어가면서 투영이 발산한다. 그 구간을 안 끊으면
+    //   화면 밖에서 되돌아온 직선이 그려져 「광선이 우상단에서 들어온다」로 보인다(실측 f200 사고).
+    const pts = [];
+    for (let i = 0; i < path.length; i++) {
+      const p = path[i];
+      const d = Math.hypot(p[0] - camObj.cam[0], p[1] - camObj.cam[1], p[2] - camObj.cam[2]);
+      const r = Math.hypot(p[0], p[1], p[2]);
+      if (d < minD || r > maxR) { pts.push(null); continue; }
+      const s = LE.project(p, camObj, W, H);
+      if (!s || s[0] < -900 || s[0] > W + 900 || s[1] < -900 || s[1] > H + 900) { pts.push(null); continue; }
+      pts.push(s);
+    }
+    const live = pts.filter(Boolean);
+    const upto = Math.max(1, Math.round(live.length * Math.max(0, Math.min(1, frac))));
+    g.save();
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    // glow > 0 이면 **넓은 반투명 밑선**을 먼저 깐다(shadowBlur 대체 · 결정론)
+    const passes = glow ? [[width + glow * 0.55, 0.16], [width + glow * 0.22, 0.28], [width, 1]]
+                        : [[width, 1]];
+    for (const [lw, al] of passes) {
+      g.globalAlpha = al; g.strokeStyle = style; g.lineWidth = lw;
+      g.beginPath();
+      let started = false, prev = null, drawn = 0;
+      for (const s of pts) {
+        if (!s) { started = false; prev = null; continue; }
+        if (drawn++ >= upto) break;
+        if (prev && Math.hypot(s[0] - prev[0], s[1] - prev[1]) > 420) started = false;
+        if (!started) { g.moveTo(s[0], s[1]); started = true; } else g.lineTo(s[0], s[1]);
+        prev = s;
+      }
+      g.stroke();
+    }
+    g.restore();
+    return live.slice(0, upto);
+  }
+
+  // ── 워드싱크 자막 ──────────────────────────────────────────────────────────
+  const ONSET = K.line_onset_f, DUR = K.dur_s, LINES = K.lines;
+  function drawSubs(f) {
+    for (const lab of Object.keys(ONSET)) {
+      const f0 = ONSET[lab], f1 = f0 + DUR[lab] * FPS;
+      if (f < f0 - 2 || f > f1 + 4) continue;
+      const words = CD.WORDS[lab] || [];
+      const tt = (f - f0) / FPS;
+      // 2줄 배치 — 어절을 폭 기준으로 나눈다
+      font(46, 'Pretendard');
+      const maxw = 880;
+      const rows = [[]]; let wsum = 0;
+      for (const w of words) {
+        const ww = g.measureText(w[0] + ' ').width;
+        if (wsum + ww > maxw && rows[rows.length - 1].length) { rows.push([]); wsum = 0; }
+        rows[rows.length - 1].push(w); wsum += ww;
+      }
+      const fade = Math.min(1, (f - f0 + 2) / 4) * Math.min(1, (f1 + 4 - f) / 5);
+      const y0 = B.SUB_Y - (rows.length - 1) * 30;
+      g.save(); g.globalAlpha = Math.max(0, fade);
+      // 자막 바닥 — 원반 위에서도 읽히게
+      const bh = rows.length * 60 + 26;
+      g.fillStyle = 'rgba(4,5,9,0.78)';          // 원반이 밝아서 0.55 로는 글자가 안 읽혔다(실측)
+      roundRect(90, y0 - 50, 900, bh, 20); g.fill();
+      for (let r = 0; r < rows.length; r++) {
+        let tw = 0; for (const w of rows[r]) tw += g.measureText(w[0] + ' ').width;
+        let x = (W - tw) / 2;
+        for (const w of rows[r]) {
+          const spoken = tt >= w[1];
+          txt(w[0], x, y0 + r * 60, 46, spoken ? P.ink : 'rgba(242,245,255,0.30)', 'Pretendard');
+          x += g.measureText(w[0] + ' ').width;
+        }
+      }
+      g.restore();
+    }
+  }
+
+  // ── 컴프별 그리기 ──────────────────────────────────────────────────────────
+  // 각 함수는 (f, lf, p, camObj) 를 받는다. lf = 컴프 내 프레임, p = 진행도(G7)
+
+  function c0Hook(f, lf, p) {
+    // ★f0 은 썸네일 프레임이다 — 카피가 **첫 프레임부터 완성**돼 있어야 한다.
+    //   리빌 이징을 걸면 f0 이 빈 화면이 되고, 피드에서 그게 그대로 썸네일이 된다(실측 사고).
+    g.save();
+    glowText('블랙홀은', B.SAFE.x0, 400, 92, P.ink, 'PretendardBlack', 'left', 16);
+    glowText('어떻게 그리나요', B.SAFE.x0, 500, 92, P.acc, 'PretendardBlack', 'left', 16);
+    g.restore();
+    // 움직이는 것은 하위 라벨의 언더바 리빌뿐(카피는 정지)
+    const rev = B.ease('eo3', lf / 20);
+    g.save();
+    g.beginPath(); g.rect(B.SAFE.x0 - 4, 528, 640 * rev, 44); g.clip();
+    txt('SCHWARZSCHILD  ·  PHOTON GEODESIC', B.SAFE.x0, 556, 27, P.blue, 'JetBrains');
+    g.restore();
+    g.save(); g.strokeStyle = P.blue; g.lineWidth = 3; g.globalAlpha = 0.8;
+    g.beginPath(); g.moveTo(B.SAFE.x0, 570); g.lineTo(B.SAFE.x0 + 640 * rev, 570); g.stroke();
+    g.restore();
+  }
+
+  function c1RayFan(f, lf, p, cam) {
+    dimAll(0.30 * B.ease('eo', lf / 10));
+    // 우상 픽셀 확대경 — 화면의 **어느 자리**를 뜯었는지 표시하고, 그 조각을 8×8 셀로 확대한다.
+    // ★뜯는 자리는 그림자 가장자리(광자링)다. 확대경 위치(=시선 앵커)와 같은 자리를 뜯으면
+    //   그 구간이 균일 주황이라 「픽셀」이 안 보인다(실측).
+    const PX = 790, PY = 470, S = 264, CELL = 8;
+    const src = 26;                                     // 원본에서 뜯는 정사각 픽셀 수
+    const RRpx = ringRadiusPx(cam);
+    const TX = Math.round(W / 2 + RRpx * 0.884), TY = Math.round(H / 2 - RRpx * 0.884);
+    const sx = Math.round(TX - src / 2), sy = Math.round(TY - src / 2);
+    const open = B.ease('back', lf / 14);
+    // 뜯은 자리 표식 + 확대경으로 잇는 두 선
+    g.save(); g.globalAlpha = Math.min(1, lf / 8);
+    g.strokeStyle = P.blue; g.lineWidth = 2;
+    g.strokeRect(TX - src / 2, TY - src / 2, src, src);
+    g.beginPath();
+    g.moveTo(TX - src / 2, TY - src / 2); g.lineTo(PX - S / 2, PY - S / 2);
+    g.moveTo(TX + src / 2, TY + src / 2); g.lineTo(PX + S / 2, PY + S / 2);
+    g.globalAlpha *= 0.5; g.stroke(); g.restore();
+    g.save();
+    g.translate(PX, PY); g.scale(open, open); g.translate(-PX, -PY);
+    g.imageSmoothingEnabled = false;
+    g.drawImage(glcv, sx, sy, src, src, PX - S / 2, PY - S / 2, S, S);
+    g.imageSmoothingEnabled = true;
+    g.strokeStyle = 'rgba(127,216,255,0.30)'; g.lineWidth = 1;
+    for (let i = 1; i < CELL; i++) {
+      const o = PX - S / 2 + (S / CELL) * i;
+      g.beginPath(); g.moveTo(o, PY - S / 2); g.lineTo(o, PY + S / 2); g.stroke();
+      const o2 = PY - S / 2 + (S / CELL) * i;
+      g.beginPath(); g.moveTo(PX - S / 2, o2); g.lineTo(PX + S / 2, o2); g.stroke();
+    }
+    g.strokeStyle = P.blue; g.lineWidth = 3;
+    roundRect(PX - S / 2, PY - S / 2, S, S, 10); g.stroke();
+    g.restore();
+
+    // 12 셀에서 광선 — **뜯은 자리의 픽셀 방향**으로 진짜 측지선을 적분한다
+    const NR = 12;
+    for (let i = 0; i < NR; i++) {
+      const cx = TX + ((i % 4) - 1.5) * (src / 4), cy = TY + (Math.floor(i / 4) - 1) * (src / 4);
+      const st = B.stagger(i, NR, 34);
+      const fr = B.ease('eo', (lf - 12 - st) / 26);
+      if (fr <= 0) continue;
+      const d = dirFromPx(cam, cx, cy);
+      const tr = GE.traceGeodesic(cam.cam, d);
+      strokePath(cam, tr.path, fr, i === 5 ? 'rgba(255,180,90,0.95)' : 'rgba(127,216,255,0.60)',
+                 i === 5 ? 4 : 2, i === 5 ? 14 : 0, { minD: 4.0 });
+    }
+    const a = B.ease('eo', (lf - 30) / 18);
+    g.save(); g.globalAlpha = a;
+    g.fillStyle = 'rgba(4,5,9,0.72)';
+    roundRect(PX - S / 2 - 8, PY - S / 2 - 62, 300, 50, 10); g.fill();
+    txt('PIXEL → RAY', PX - S / 2 + 8, PY - S / 2 - 26, 30, P.blue, 'JetBrains');
+    g.fillStyle = 'rgba(4,5,9,0.72)';
+    roundRect(PX - S / 2 - 8, PY + S / 2 + 16, 300, 50, 10); g.fill();
+    txt(PX_TOTAL.toLocaleString('en-US') + ' px', PX - S / 2 + 8, PY + S / 2 + 52, 30, P.ink, 'JetBrains');
+    g.restore();
+  }
+
+  /** 한 픽셀이 「어디서 온 빛인지」 — 그 픽셀 방향으로 거꾸로 쏜 광선이 적도면(원반)을 만나는 점들. */
+  function pixelSources(cam, sx, sy) {
+    const d = dirFromPx(cam, sx, sy);
+    const tr = GE.traceGeodesic(cam.cam, d);
+    const pts = tr.crossings.map(c => ({ s: LE.project(c.p, cam, W, H), r: c.r })).filter(o => o.s);
+    return { d, tr, pts };
+  }
+
+  function c2OneRay(f, lf, p, cam) {
+    dimAll(0.46);
+    const RRpx = ringRadiusPx(cam);
+    const PX = Math.round(W / 2 + RRpx * 0.884), PY = Math.round(H / 2 - RRpx * 0.884);
+    const { d, tr, pts } = pixelSources(cam, PX, PY);
+    // ★카메라 자신의 시점에서는 「광선이 휘는 모양」이 안 보인다 — 가까운 구간이 전부 그 픽셀
+    //   한 점으로 투영되기 때문이다(실측). 대신 **그 빛이 어디서 왔는지**를 보여준다:
+    //   한 픽셀에 원반의 서로 다른 두 곳이 겹쳐 온다 = 2차상. C3 가 이걸 아치 전체로 확장한다.
+    const fr = B.ease('eio', lf / 26);
+    strokePath(cam, tr.path, fr, 'rgba(255,180,90,0.85)', 4, 14, { minD: 4.0 });
+
+    g.save();
+    glowDot(PX, PY, 9, '#dff2ff', 'rgba(127,216,255,0.65)');
+    g.fillStyle = P.blue; g.beginPath(); g.arc(PX, PY, 7, 0, 7); g.fill();
+    g.restore();
+
+    const show = Math.min(2, pts.length);
+    for (let i = 0; i < show; i++) {
+      const a = B.ease('eo', (lf - 10 - i * 8) / 14);
+      if (a <= 0) continue;
+      const s = pts[i].s;
+      g.save(); g.globalAlpha = a;
+      g.strokeStyle = 'rgba(255,243,216,0.6)'; g.lineWidth = 2; g.setLineDash([8, 8]);
+      g.beginPath(); g.moveTo(PX, PY); g.lineTo(s[0], s[1]); g.stroke(); g.setLineDash([]);
+      glowDot(s[0], s[1], 9, '#fffaf0', 'rgba(255,220,150,0.60)');
+      g.fillStyle = P.hot; g.beginPath(); g.arc(s[0], s[1], 7, 0, 7); g.fill();
+      glowText('r=' + pts[i].r.toFixed(1), s[0] + 18, s[1] + 10, 26, P.hot, 'JetBrains', 'left', 7);
+      g.restore();
+    }
+
+    const b = GE.impactParam(cam.cam, d);
+    const defl = GE.deflection(cam.cam, d) || 0;
+    const a = B.ease('eo', (lf - 22) / 14);
+    g.save(); g.globalAlpha = a;
+    g.fillStyle = 'rgba(4,5,9,0.72)'; roundRect(126, 1236, 700, 128, 14); g.fill();
+    // 문구는 실제로 찾은 발원점 수에 따라 갈린다 — 1곳인데 「겹쳐 온다」고 하면 화면이 거짓이 된다
+    txt(show >= 2 ? '이 픽셀 하나에 원반 ' + show + '곳이 겹쳐 온다'
+                  : '이 픽셀의 빛은 원반 저기서 왔다',
+        152, 1288, 36, P.ink, 'Pretendard');
+    txt('b = ' + b.toFixed(2) + ' Rs   ·   편향 ' + (defl * 180 / Math.PI).toFixed(1) + '°',
+        152, 1336, 30, P.acc, 'JetBrains');
+    g.restore();
+  }
+
+  // C3 — 적도면을 2회 이상 지나는 광선 다발 = 2차상(위아래로 감긴 아치)
+  // 그림자 **아래 가장자리**를 좌→우로 훑으며, 각 픽셀의 빛이 원반 어디서 왔는지 대응시킨다.
+  // 좌 → 우 순서라 stagger 가 그대로 단조 이동이 된다(◆지시 ⑥).
+  // ★2차상이 실제로 생기는 자리는 「그림자 둘레」가 아니라 **아래쪽 초승달 띠**다(실측 스캔:
+  //   x 240~840 · y 990~1250 의 U 곡선). 각 x 마다 위에서 아래로 훑어 첫 2회-교차 픽셀을 잡는다.
+  //   좌 → 우 순서라 stagger 가 그대로 단조 이동(◆지시 ⑥).
+  function archMap(cam) {
+    const raw = [];
+    for (let sx = 250; sx <= 830; sx += 20) {
+      for (let sy = 980; sy <= 1380; sy += 6) {
+        const d = dirFromPx(cam, sx, sy);
+        const tr = GE.traceGeodesic(cam.cam, d, { noPath: true });
+        if (tr.captured || tr.crossings.length < 2) continue;
+        const s = LE.project(tr.crossings[1].p, cam, W, H);
+        if (!s) break;
+        raw.push({ sx, sy, s, r: tr.crossings[1].r });
+        break;
+      }
+    }
+    if (raw.length < 4) return raw;
+    // 발원점 이상치 제거 — 띠 양끝은 2차 교차가 아주 먼 곳에서 잡혀 화면 밖으로 튄다
+    const mx = raw.map(o => o.s[0]).sort((a, b) => a - b)[raw.length >> 1];
+    const my = raw.map(o => o.s[1]).sort((a, b) => a - b)[raw.length >> 1];
+    const keep = raw.filter(o => Math.hypot(o.s[0] - mx, o.s[1] - my) < 300);
+    // 탐색 격자(6px)가 만든 계단을 3점 이동평균으로 편다
+    for (let i = 1; i < keep.length - 1; i++)
+      keep[i].sy = (keep[i - 1].sy + keep[i].sy * 2 + keep[i + 1].sy) / 4;
+    return keep;
+  }
+
+  function c3Arch(f, lf, p, cam) {
+    dimAll(0.44);
+    const m = archMap(cam);
+    const n = m.length;
+    // ① 보이는 자리 = 아래 초승달 띠(좌→우로 이어 그린다)
+    g.save(); g.globalCompositeOperation = 'lighter';
+    g.strokeStyle = 'rgba(255,186,96,0.85)'; g.lineWidth = 5; g.lineCap = 'round';
+    g.beginPath();
+    let started = false, cnt = 0;
+    for (let i = 0; i < n; i++) {
+      const a = B.ease('eo', (lf - 4 - B.stagger(i, n, 30)) / 16);
+      if (a <= 0.02) continue;
+      cnt++;
+      if (!started) { g.moveTo(m[i].sx, m[i].sy); started = true; } else g.lineTo(m[i].sx, m[i].sy);
+    }
+    g.stroke(); g.restore();
+    // ② 실제로 빛이 나온 자리 = 블랙홀 **뒤** 원반의 좁은 띠 + 잇는 선 몇 가닥
+    for (let i = 0; i < n; i++) {
+      const a = B.ease('eo', (lf - 10 - B.stagger(i, n, 30)) / 16);
+      if (a <= 0) continue;
+      const e = m[i];
+      g.save(); g.globalAlpha = a;
+      if (i % 6 === 0) {
+        g.strokeStyle = 'rgba(255,243,216,0.20)'; g.lineWidth = 1.5;
+        g.beginPath(); g.moveTo(e.sx, e.sy); g.lineTo(e.s[0], e.s[1]); g.stroke();
+      }
+      g.globalCompositeOperation = 'lighter';
+      g.fillStyle = 'rgba(255,247,226,0.95)';
+      g.beginPath(); g.arc(e.s[0], e.s[1], 6, 0, 7); g.fill();
+      g.restore();
+    }
+    const a = B.ease('eo', (lf - 36) / 18);
+    g.save(); g.globalAlpha = a;
+    g.fillStyle = 'rgba(4,5,9,0.74)'; roundRect(126, 1352, 828, 132, 14); g.fill();
+    txt('아래 초승달 = 블랙홀 뒤쪽 원반', 152, 1406, 38, P.hot, 'Pretendard');
+    txt('적도면 2회 통과 · ' + n + ' px 매핑', 152, 1452, 27, P.dim, 'JetBrains');
+    g.restore();
+  }
+
+  function ringRadiusPx(cam) {           // 임계 임팩트 파라미터의 화면 반경
+    const Rc = Math.hypot(cam.cam[0], cam.cam[1], cam.cam[2]);
+    return (BCRIT / (Rc * cam.fov)) * H;
+  }
+
+  function c4Ring(f, lf, p, cam) {
+    const rr = ringRadiusPx(cam);
+    const e = B.ease('eio', lf / 30);
+    const from = [830, 1080], to = [W / 2, H / 2];
+    const cx = from[0] + (to[0] - from[0]) * e, cy = from[1] + (to[1] - from[1]) * e;
+    const r = 520 * (1 - e) + rr * e;
+    g.save();
+    g.strokeStyle = 'rgba(127,216,255,' + (0.75 * (1 - e * 0.4)) + ')';
+    g.lineWidth = 3; g.setLineDash([18, 14]);
+    g.beginPath(); g.arc(cx, cy, r, 0, 7); g.stroke();
+    g.restore();
+    // 도달 뒤 링 점화 — ★점화만 하고 사라지면 이 컴프가 「렌징 + 라벨」로만 남아
+    //   C0·C8 과 구분이 안 된다(컨택트 시트 육안). 점화 뒤 **얇은 링을 계속 남긴다**.
+    if (lf >= 30) {
+      g.save(); g.globalAlpha = 0.55; g.strokeStyle = P.blue; g.lineWidth = 2;
+      g.setLineDash([6, 10]);
+      g.beginPath(); g.arc(W / 2, H / 2, rr, 0, 7); g.stroke();
+      g.restore();
+    }
+    const fl = B.ease('eo', (lf - 30) / 8);
+    if (fl > 0) {
+      g.save(); g.globalAlpha = fl * (1 - B.ease('lin', Math.max(0, (lf - 40) / 10)) * 0.55);
+      g.globalCompositeOperation = 'lighter';
+      for (const [lw, al] of [[26, 0.10], [12, 0.20], [4, 1]]) {   // shadowBlur 대체(결정론)
+        g.globalAlpha *= 1; g.strokeStyle = P.hot; g.lineWidth = lw;
+        g.save(); g.globalAlpha = g.globalAlpha * al;
+        g.beginPath(); g.arc(W / 2, H / 2, rr, 0, 7); g.stroke(); g.restore();
+      }
+      g.restore();
+    }
+    const a = B.ease('eo', (lf - 26) / 14);
+    g.save(); g.globalAlpha = a;
+    g.fillStyle = 'rgba(4,5,9,0.76)'; roundRect(300, 1268, 480, 116, 14); g.fill();
+    txt('광자구 — 여기 안쪽은 못 빠져나온다', 540, 1316, 32, P.blue, 'Pretendard', 'center');
+    txt('b_crit = ' + BCRIT.toFixed(3) + ' Rs', 540, 1360, 28, P.ink, 'JetBrains', 'center');
+    g.restore();
+  }
+
+  function drawStars(f, cam, opt) {
+    const fi = Math.max(0, Math.min(INF.frames - 1, ambF(f) - IST));
+    const Rc = Math.hypot(cam.cam[0], cam.cam[1], cam.cam[2]);
+    const rr = ringRadiusPx(cam);
+    const base = fi * INF.count * 3;
+    for (let i = 0; i < INF.count; i++) {
+      if (!INF.alive[fi * INF.count + i]) continue;
+      const p = [INF.pos[base + i * 3], INF.pos[base + i * 3 + 1], INF.pos[base + i * 3 + 2]];
+      const s = LE.project(p, cam, W, H);
+      if (!s) continue;
+      const depth = (p[0] - cam.cam[0]) * cam.fwd[0] + (p[1] - cam.cam[1]) * cam.fwd[1] + (p[2] - cam.cam[2]) * cam.fwd[2];
+      const dc = Math.hypot(s[0] - W / 2, s[1] - H / 2);
+      if (depth > Rc && dc < rr) continue;            // 그림자 뒤 = 가려진다(authored 근사)
+      const r = Math.hypot(p[0], p[1], p[2]);
+      // ★가산 합성 + 큰 반경. 2px·40% 점은 밝은 원반 위에서 **한 개도 안 보였다**(실측 f330).
+      const br = Math.max(0.45, Math.min(1, 5.0 / r));
+      g.globalAlpha = br * (opt && opt.alpha !== undefined ? opt.alpha : 1);
+      g.globalCompositeOperation = 'lighter';
+      // ★짧은 스트리크 — 점만 찍으면 「배경 별」로 읽힌다. 6프레임 전 위치까지 그으면 움직임이 보인다.
+      const pf = Math.max(0, fi - 6);
+      if (pf !== fi && INF.alive[pf * INF.count + i]) {
+        const pb = (pf * INF.count + i) * 3;
+        const ps = LE.project([INF.pos[pb], INF.pos[pb + 1], INF.pos[pb + 2]], cam, W, H);
+        if (ps && Math.hypot(ps[0] - s[0], ps[1] - s[1]) < 260) {
+          g.strokeStyle = i === LEAD ? 'rgba(255,214,140,0.85)' : 'rgba(170,200,255,0.55)';
+          g.lineWidth = i === LEAD ? 4 : 1.8; g.lineCap = 'round';
+          g.beginPath(); g.moveTo(ps[0], ps[1]); g.lineTo(s[0], s[1]); g.stroke();
+        }
+      }
+      const rad = i === LEAD ? 7.5 : 3.2;
+      const gr = g.createRadialGradient(s[0], s[1], 0, s[0], s[1], rad * 3.2);
+      gr.addColorStop(0, i === LEAD ? '#fff6e0' : '#dfeaff');
+      gr.addColorStop(0.28, i === LEAD ? 'rgba(255,214,140,0.75)' : 'rgba(150,190,255,0.55)');
+      gr.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = gr;
+      g.beginPath(); g.arc(s[0], s[1], rad * 3.2, 0, 7); g.fill();
+      g.globalCompositeOperation = 'source-over';
+    }
+    g.globalAlpha = 1;
+    // 리드 스타 트레일 — 지나온 궤적(사전 적분값)
+    if (opt && opt.trail && INF.alive[fi * INF.count + LEAD]) {
+      g.save(); g.strokeStyle = 'rgba(255,243,216,0.55)'; g.lineWidth = 2.5; g.beginPath();
+      let started = false;
+      for (let k = Math.max(0, fi - 120); k <= fi; k += 2) {
+        if (!INF.alive[k * INF.count + LEAD]) continue;
+        const b2 = (k * INF.count + LEAD) * 3;
+        const s = LE.project([INF.pos[b2], INF.pos[b2 + 1], INF.pos[b2 + 2]], cam, W, H);
+        if (!s) continue;
+        if (!started) { g.moveTo(s[0], s[1]); started = true; } else g.lineTo(s[0], s[1]);
+      }
+      g.stroke(); g.restore();
+    }
+  }
+
+  function c5Infall(f, lf, p, cam) {
+    dimAll(0.42);                 // 원반을 눌러야 별이 읽힌다(이 컴프의 주인공은 별이다)
+    drawStars(f, cam, { trail: true });
+    const a = B.ease('eo', (lf - 18) / 20);
+    g.save(); g.globalAlpha = a;
+    txt('별 ' + INF.count + '개 궤도 · 속도 Verlet 사전 적분', 150, 1420, 34, P.ink, 'Pretendard');
+    txt('NOT A SHADER', 150, 1462, 25, P.blue, 'JetBrains');
+    g.restore();
+  }
+
+  function c6Merge(f, lf, p, cam) {
+    // 합류 뒤 원반이 되살아난다. ★lf74 까지 끌면 컴프 끝까지 화면이 변해 G6 유지가 0.36s 로
+    //   떨어진다(실측) — 되살아나는 동작을 lf60 에 끝내 0.60s 를 문다.
+    dimAll(0.42 * (1 - B.ease('eio', Math.max(0, lf - 34) / 26)));
+    drawStars(f, cam, { trail: true });
+    const mf = B.MERGE_F();
+    const d = f - mf;
+    if (d >= 0 && d < 11) {                      // 합류 플래시 — 화면을 하얗게 덮지 않는다(실측 f430)
+      const k = Math.pow(1 - d / 11, 2.4);
+      g.save();
+      g.globalCompositeOperation = 'lighter';
+      const gr = g.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, 620);
+      gr.addColorStop(0, 'rgba(255,243,216,' + (0.60 * k) + ')');
+      gr.addColorStop(1, 'rgba(255,243,216,0)');
+      g.fillStyle = gr; g.fillRect(0, 0, W, H);
+      g.restore();
+    }
+    const a = B.ease('eo', (lf - 26) / 18);
+    g.save(); g.globalAlpha = a;
+    g.fillStyle = 'rgba(4,5,9,0.74)'; roundRect(126, 1372, 560, 112, 14); g.fill();
+    txt('안쪽 가장자리 도달', 152, 1420, 36, P.acc, 'Pretendard');
+    txt('f' + mf + '  ·  r < ' + INF.opt.rKill.toFixed(2) + ' Rs', 152, 1464, 27, P.dim, 'JetBrains');
+    g.restore();
+  }
+
+  // 도플러 — 셰이더와 같은 식으로 좌·우 밝기 배수를 계산한다
+  function doppler(cam, sign) {
+    const rd = 5.0;
+    const ang = Math.atan2(cam.cam[0], cam.cam[2]) + sign * Math.PI / 2;
+    const xp = [rd * Math.sin(ang), 0, rd * Math.cos(ang)];
+    const vdir = [-xp[2], 0, xp[0]];
+    const vn = Math.hypot(vdir[0], vdir[2]);
+    const vd = [vdir[0] / vn, 0, vdir[2] / vn];
+    const tc = [cam.cam[0] - xp[0], cam.cam[1] - xp[1], cam.cam[2] - xp[2]];
+    const tn = Math.hypot(tc[0], tc[1], tc[2]);
+    const mu = (vd[0] * tc[0] + vd[2] * tc[2]) / tn;
+    const beta = Math.min(0.72, 0.46 * Math.sqrt(RS / rd));
+    const gam = 1 / Math.sqrt(1 - beta * beta);
+    const dop = 1 / (gam * (1 - beta * mu));
+    return { beam: Math.pow(dop, 3), mu, xp };
+  }
+
+  function c7Doppler(f, lf, p, cam) {
+    const L1 = doppler(cam, +1), R1 = doppler(cam, -1);
+    const near = L1.beam >= R1.beam ? L1 : R1, far = L1.beam >= R1.beam ? R1 : L1;
+    const card = (o, x, y, title, sub, col, alpha) => {
+      g.save(); g.globalAlpha = alpha;
+      g.fillStyle = P.panel; roundRect(x - 150, y - 62, 300, 108, 14); g.fill();
+      g.strokeStyle = col; g.lineWidth = 2; roundRect(x - 150, y - 62, 300, 108, 14); g.stroke();
+      txt(title, x, y - 20, 36, col, 'Pretendard', 'center');
+      txt(sub, x, y + 24, 30, P.ink, 'JetBrains', 'center');
+      g.restore();
+      // 원반 위 지시점
+      const s = LE.project(o.xp, cam, W, H);
+      if (s) {
+        g.save(); g.globalAlpha = alpha * 0.9; g.strokeStyle = col; g.lineWidth = 2;
+        g.beginPath(); g.moveTo(x, y + 46); g.lineTo(s[0], s[1]); g.stroke();
+        g.fillStyle = col; g.beginPath(); g.arc(s[0], s[1], 6, 0, 7); g.fill(); g.restore();
+      }
+    };
+    card(near, 300, 1000, '다가옴', '밝기 ×' + near.beam.toFixed(2), P.blue,
+         B.ease('eo', (lf - 6) / 14));
+    card(far, 790, 1000, '멀어짐', '밝기 ×' + far.beam.toFixed(2), P.red,
+         B.ease('eo', (lf - 22) / 14));
+  }
+
+  function c8Money(f, lf, p, cam) {
+    const out = 1 - B.ease('eio', lf / 12);
+    if (out > 0.01) {
+      g.save(); g.globalAlpha = out * 0.9;
+      txt('다가옴', 300, 1000, 36, P.blue, 'Pretendard', 'center');
+      txt('멀어짐', 790, 1000, 36, P.red, 'Pretendard', 'center');
+      g.restore();
+    }
+  }
+
+  // ── 코드 패널 ──────────────────────────────────────────────────────────────
+  function codePanel(openY, alpha, scroll) {
+    const X = 118, Wp = 844, Y = 470, Hp = 720;
+    g.save(); g.globalAlpha = alpha;
+    g.translate(X + Wp / 2, Y + Hp / 2); g.scale(1, openY); g.translate(-(X + Wp / 2), -(Y + Hp / 2));
+    g.fillStyle = P.panel; roundRect(X, Y, Wp, Hp, 16); g.fill();
+    g.strokeStyle = 'rgba(127,216,255,0.35)'; g.lineWidth = 2; roundRect(X, Y, Wp, Hp, 16); g.stroke();
+    g.save(); roundRect(X, Y, Wp, Hp, 16); g.clip();
+    txt(CD.CODE.file, X + 28, Y + 52, 28, P.blue, 'JetBrains');
+    txt('L' + CD.CODE.lines[0].n + '–L' + CD.CODE.lines[CD.CODE.lines.length - 1].n,
+        X + Wp - 28, Y + 52, 26, P.dim, 'JetBrains', 'right');
+    g.strokeStyle = 'rgba(127,216,255,0.20)'; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(X + 20, Y + 70); g.lineTo(X + Wp - 20, Y + 70); g.stroke();
+    const lh = 44;
+    for (let i = 0; i < CD.CODE.lines.length; i++) {
+      const ln = CD.CODE.lines[i], y = Y + 118 + i * lh - (scroll || 0);
+      if (y < Y - 30 || y > Y + Hp + 30) continue;
+      txt(String(ln.n), X + 30, y, 24, 'rgba(242,245,255,0.34)', 'JetBrains');
+      const hot = /acc|pPrev\.y|STEPS/.test(ln.text);
+      txt(ln.text.replace(/\t/g, '  '), X + 96, y, 24, hot ? P.acc : P.ink, 'JetBrains');
+    }
+    // 긴 줄은 우측 페이드로 잘린 티를 낸다(짧게 고쳐 쓰면 원문이 아니게 된다)
+    const grd = g.createLinearGradient(X + Wp - 120, 0, X + Wp, 0);
+    grd.addColorStop(0, 'rgba(6,8,14,0)'); grd.addColorStop(1, 'rgba(6,8,14,0.95)');
+    g.fillStyle = grd; g.fillRect(X + Wp - 120, Y + 74, 120, Hp - 74);
+    g.restore(); g.restore();
+  }
+
+  function c9Code(f, lf, p) {
+    dimAll(0.55 * B.ease('eo', lf / 10));
+    const open = B.ease('eo3', lf / 22);
+    codePanel(open, Math.min(1, lf / 6), 0);
+    const a = B.ease('eo', (lf - 20) / 14);
+    g.save(); g.globalAlpha = a;
+    txt('이 화면을 그리는 줄', 118, 400, 46, P.ink, 'Pretendard');
+    txt('측지선 적분 · 적도면 교차', 118, 442, 27, P.blue, 'JetBrains');
+    g.restore();
+  }
+
+  function c10Timeline(f, lf, p) {
+    dimAll(0.55);
+    // ★코드 패널은 **질감**으로만 남긴다(0.18 이면 타임라인 글자와 겹쳐 둘 다 안 읽힌다 — 실측 f660).
+    codePanel(1, 0.07, 0);
+    const X0 = 118, X1 = 962, Y = 700;
+    g.save(); g.globalAlpha = Math.min(1, lf / 6);
+    g.fillStyle = 'rgba(4,5,9,0.80)'; roundRect(96, 492, 888, 280, 18); g.fill();
+    g.restore();
+    const rev = B.ease('eo', lf / 20);
+    g.save();
+    g.strokeStyle = 'rgba(242,245,255,0.30)'; g.lineWidth = 4; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(X0, Y); g.lineTo(X0 + (X1 - X0) * rev, Y); g.stroke();
+    // 컴프 눈금
+    for (let i = 0; i < B.COMP.length; i++) {
+      const c = B.COMP[i], fx = X0 + (X1 - X0) * (c.f0 / N);
+      if (fx > X0 + (X1 - X0) * rev) continue;
+      g.strokeStyle = 'rgba(127,216,255,0.55)'; g.lineWidth = 2;
+      g.beginPath(); g.moveTo(fx, Y - 14); g.lineTo(fx, Y + 14); g.stroke();
+    }
+    g.restore();
+    // NOW 마커 = 지금 이 프레임의 **진짜** 위치
+    const nx = X0 + (X1 - X0) * (f / N);
+    const a = B.ease('back', (lf - 20) / 16);
+    if (a > 0) {
+      g.save(); g.globalAlpha = Math.min(1, a);
+      g.fillStyle = P.acc; g.beginPath(); g.arc(nx, Y, 11 * Math.min(1, a), 0, 7); g.fill();
+      txt('NOW  f' + f, nx + 22, Y - 22, 30, P.acc, 'JetBrains');
+      g.restore();
+    }
+    const b = B.ease('eo', (lf - 8) / 16);
+    g.save(); g.globalAlpha = b;
+    txt('이 영상', X0, 560, 46, P.ink, 'Pretendard');
+    txt(N + 'f · ' + (N / FPS).toFixed(3) + 's · ' + B.COMP.length + ' comp', X0, 606, 30, P.dim, 'JetBrains');
+    g.restore();
+  }
+
+  function c11Cta(f, lf, p) {
+    dimAll(0.50);
+    const sc = B.ease('eio', lf / 40) * 980;
+    codePanel(1, 0.30 * (1 - B.ease('eio', lf / 46)), sc);
+    const e = B.ease('eo3', lf / 44);
+    const x = 800 + (620 - 800) * e, y = 650 + (1250 - 650) * e;
+    g.save(); g.globalAlpha = Math.min(1, lf / 8);
+    g.fillStyle = P.panel; roundRect(x - 380, y - 96, 760, 196, 20); g.fill();
+    g.strokeStyle = P.acc; g.lineWidth = 3; roundRect(x - 380, y - 96, 760, 196, 20); g.stroke();
+    txt('코드는 고정 댓글에', x, y - 22, 48, P.ink, 'Pretendard', 'center');
+    txt('@duru-ai0503', x, y + 44, 36, P.acc, 'JetBrains', 'center');
+    g.restore();
+  }
+
+  const DRAW = [c0Hook, c1RayFan, c2OneRay, c3Arch, c4Ring, c5Infall,
+                c6Merge, c7Doppler, c8Money, c9Code, c10Timeline, c11Cta];
+
+  // ── 프레임 ────────────────────────────────────────────────────────────────
+  function drawFrame(f) {
+    f = Math.max(0, Math.min(N - 1, Math.round(f)));
+    const c = B.compAt(f), lf = f - c.f0, p = B.progress(f);
+    const lp = B.lensParams(ambF(f));
+    lens.render(lp);
+    const cam = LE.camera(lp);
+    // ★★프레임 시작마다 2D 컨텍스트를 표준 상태로 되돌린다.
+    //   안 하면 앞 프레임이 남긴 상태가 다음 프레임을 바꾼다 = **결정론이 시크 순서에 의존**한다.
+    //   실측 사고: `lineCap`(별 스트리크가 'round' 로 두고 감)이 C0 밑줄의 끝 모양을 바꿔
+    //   f0 이 정순/역순에서 **12픽셀** 달랐다(x106~109 · y568~571). 게이트가 아니었으면 못 봤다.
+    g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+    g.lineCap = 'butt'; g.lineJoin = 'miter'; g.lineWidth = 1; g.setLineDash([]);
+    g.shadowBlur = 0; g.shadowColor = 'rgba(0,0,0,0)';
+    g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'low';
+    g.textAlign = 'left'; g.textBaseline = 'alphabetic'; g.miterLimit = 10;
+    g.fillStyle = P.bg; g.fillRect(0, 0, W, H);
+    g.drawImage(glcv, 0, 0);
+    // 컷 순간 스케일 펀치 — 페이드가 아니라 타격
+    if (lf < 5) {
+      const s = 1 + 0.04 * (1 - lf / 5);
+      g.save(); g.translate(W / 2, H / 2); g.scale(s, s); g.translate(-W / 2, -H / 2);
+      g.drawImage(glcv, 0, 0); g.restore();
+    }
+    DRAW[c.i](f, lf, p, cam);
+    drawSubs(f);
+    // ★하단 스크림 — 플랫폼 UI 대역(y>1700)이 원반 때문에 밝아 G5 에 걸렸다(표본 최대휘도 233).
+    //   세이프존 캐넌상 그 아래엔 의미가 없으므로 어둡게 깔아도 잃는 게 없다.
+    const scrim = g.createLinearGradient(0, 1660, 0, H);
+    scrim.addColorStop(0, 'rgba(4,5,9,0)'); scrim.addColorStop(0.35, 'rgba(4,5,9,0.55)');
+    scrim.addColorStop(1, 'rgba(4,5,9,0.86)');
+    g.fillStyle = scrim; g.fillRect(0, 1660, W, H - 1660);
+  }
+
+  // ── 게이트 전용 오버레이(본편 렌더에는 없다) ────────────────────────────────
+  window.__drawGaze = function (f) {
+    const c = B.compAt(f);
+    g.save();
+    g.strokeStyle = 'rgba(224,87,79,.85)'; g.lineWidth = 3; g.setLineDash([14, 10]);
+    g.strokeRect(B.SAFE.x0, B.SAFE.y0, B.SAFE.x1 - B.SAFE.x0, B.SAFE.y1 - B.SAFE.y0);
+    g.setLineDash([]); g.strokeStyle = 'rgba(241,207,102,.7)'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(0, 1700); g.lineTo(W, 1700); g.stroke();
+    g.fillStyle = 'rgba(127,216,255,.9)';
+    g.beginPath(); g.arc(c.enter[0], c.enter[1], 16, 0, 7); g.fill();
+    g.fillStyle = 'rgba(255,180,90,.95)';
+    g.beginPath(); g.arc(c.exit[0], c.exit[1], 22, 0, 7); g.fill();
+    g.strokeStyle = 'rgba(255,180,90,.8)'; g.lineWidth = 4;
+    g.beginPath(); g.moveTo(c.enter[0], c.enter[1]); g.lineTo(c.exit[0], c.exit[1]); g.stroke();
+    txt('C' + c.i + ' ' + c.key + '  p=' + B.progress(f).toFixed(2), 40, 80, 34, '#fff', 'JetBrains');
+    g.restore();
+  };
+
+  window.__seekTo = t => drawFrame(t * FPS);
+  window.__seekF = f => drawFrame(f);
+  window.__setFreeze = v => { FREEZE = !!v; };
+  window.__fps = FPS; window.__frames = N; window.__total = N / FPS;
+  window.__comp = B.COMP.map(c => ({ i: c.i, f0: c.f0, len: c.len, key: c.key }));
+  window.__beats = B.COMP.length;
+  window.__wordsSha = CD.WORDS_SHA;
+  window.__codeSha = CD.SRC_SHA;
+  window.__progress = f => B.progress(f);
+  window.__mergeF = () => B.MERGE_F();
+  window.__leadDeath = LEAD_DEATH;
+
+  // ── 미리보기 UI — `comp.html?preview` 로 열었을 때만. 렌더 경로에는 없다(쿼리 없음). ──
+  //   서버 없이 파일을 그냥 열어 아무 프레임이나 볼 수 있게 하는 게 목적이다.
+  function mountPreview() {
+    const bar = document.createElement('div');
+    bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;padding:10px 14px;background:#0b0e15;'
+      + 'color:#dfe6ff;font:14px/1.4 ui-monospace,monospace;display:flex;gap:12px;align-items:center;z-index:9';
+    const sl = document.createElement('input');
+    sl.type = 'range'; sl.min = 0; sl.max = N - 1; sl.value = 0; sl.style.flex = '1';
+    const lab = document.createElement('span'); lab.style.minWidth = '210px';
+    const upd = () => {
+      const f = +sl.value, c = B.compAt(f);
+      drawFrame(f);
+      lab.textContent = `f${String(f).padStart(3, '0')} / ${N - 1}  ${(f / FPS).toFixed(3)}s  `
+        + `C${String(c.i).padStart(2, '0')} ${c.key}`;
+      location.hash = 'f=' + f;
+    };
+    sl.addEventListener('input', upd);
+    addEventListener('keydown', e => {
+      if (e.key === 'ArrowRight') { sl.value = Math.min(N - 1, +sl.value + (e.shiftKey ? 25 : 1)); upd(); }
+      if (e.key === 'ArrowLeft') { sl.value = Math.max(0, +sl.value - (e.shiftKey ? 25 : 1)); upd(); }
+    });
+    bar.append(lab, sl); document.body.appendChild(bar);
+    const m = /f=(\d+)/.exec(location.hash);
+    if (m) sl.value = Math.min(N - 1, +m[1]);
+    upd();
+  }
+
+  const fonts = [
+    document.fonts.load('900 92px PretendardBlack'),
+    document.fonts.load('800 46px Pretendard'),
+    document.fonts.load('24px JetBrains'),
+  ];
+  const boot = () => {
+    drawFrame(0);
+    window.__ready = true;
+    if (/(^|[?&])preview/.test(location.search)) mountPreview();
+  };
+  Promise.all(fonts).then(boot).catch(e => { console.error(e); boot(); });
+})();
+</script>

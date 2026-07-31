@@ -1,0 +1,4 @@
+# ★줄바꿈 변환 금지. render.mjs 가 lens_engine.js 의 **바이트 sha256** 을 code_data.js 각인값과
+#   대조하므로, 클론에서 LF→CRLF 로 바뀌면 해시가 달라져 렌더가 거부된다.
+#   MANIFEST.json 의 파일 해시도 같은 이유로 바이트 동일이어야 한다.
+* -text

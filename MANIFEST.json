@@ -1,0 +1,28 @@
+{
+ "ep": "ep4_blackhole_renewal",
+ "fps": 25,
+ "total_frames": 750,
+ "total_s": 30.0,
+ "files": {
+  "LICENSE": "7179683e8000e6bd",
+  "PROMPTS.md": "0feec9b7eb2c1e32",
+  "README.md": "e5ce8d5c9903c9c3",
+  "src/beats4.js": "eedf66fca6e69ae0",
+  "src/browser.mjs": "0d69efa4db9fd9f7",
+  "src/code_data.js": "62a7a19bd34646ee",
+  "src/comp.html": "bebee28a34edb0b1",
+  "src/geodesic.js": "f01fff4dd8741c08",
+  "src/gsap.min.js": "92bb9a96476f983d",
+  "src/hold_gate.mjs": "006d50fbefe9f5fb",
+  "src/infall_engine.js": "6ca4f5fa94550e76",
+  "src/lens_engine.js": "8407fddc2ecbe085",
+  "src/render.mjs": "ed38253165bba0df",
+  "src/verify.mjs": "2db5babde0b99978",
+  "src/verify_render.mjs": "952637aa5a92e220",
+  "_fonts/JetBrainsMono-OFL.txt": "b2fe5e8987594e9f",
+  "_fonts/JetBrainsMono.ttf": "48715a42ec242c21",
+  "_fonts/Pretendard-Black.otf": "94628b0bcea8936b",
+  "_fonts/Pretendard-ExtraBold.otf": "c35fe941b7568d52",
+  "_fonts/Pretendard-OFL.txt": "82e9c8a4b203261f"
+ }
+}
