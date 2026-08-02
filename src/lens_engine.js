@@ -2,7 +2,7 @@
  *
  * 구 ep4_blackhole/lens_proto.html 승계. 이 편에서 확장한 것:
  *   · 카메라 파라미터(incl·az·fov·zoom)를 호출자가 준다(프로토는 u_t 에 묶여 있었다)
- *   · 노출(expo)·원반 안쪽 반경(diskIn)·별필드 밝기(starGain)를 컴프별로 뺀다
+ *   · 노출(expo)·원반 안쪽 반경(diskIn)·별필드 밝기(starGain)를 호출자 인자로 뺀다
  *   · 셰이더 상수 RS/DISK_IN/DISK_OUT/STEPS/DT 를 JS 로 노출 = geodesic.js 와 같은 값을 쓴다
  *
  * ★결정론: 출력 = f(uniform) 순수함수. 시간 진행은 호출자가 t 로만 준다.

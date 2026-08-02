@@ -1,0 +1,75 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>blackhole — Schwarzschild lensing viewer</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body { margin:0; background:#07080c; color:#dfe6ff;
+              font:14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  #wrap { display:flex; flex-direction:column; height:100vh; }
+  #stage { flex:1; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+  canvas { max-width:100%; max-height:100%; display:block; }
+  #ui { padding:10px 14px; background:#0b0e15; border-top:1px solid #1b2233;
+        display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:8px 18px; }
+  .row { display:flex; align-items:center; gap:10px; }
+  .row label { width:52px; color:#8fa0c8; }
+  .row input[type=range] { flex:1; }
+  .row output { width:66px; text-align:right; color:#ffb45a; }
+  #bar { grid-column:1/-1; display:flex; gap:10px; align-items:center; flex-wrap:wrap; color:#8fa0c8 }
+  button { background:#16203a; color:#dfe6ff; border:1px solid #2b3a5c; border-radius:6px;
+           padding:6px 12px; font:inherit; cursor:pointer }
+  button:hover { border-color:#7fd8ff }
+  code { color:#7fd8ff }
+</style>
+<div id="wrap">
+  <div id="stage"><canvas id="cv" width="1024" height="1024"></canvas></div>
+  <div id="ui">
+    <div class="row"><label>incl</label><input id="incl" type="range" min="1" max="90" step="1" value="66"><output id="o_incl"></output></div>
+    <div class="row"><label>az</label><input id="az" type="range" min="0" max="360" step="1" value="20"><output id="o_az"></output></div>
+    <div class="row"><label>zoom</label><input id="zoom" type="range" min="0.7" max="3.0" step="0.01" value="1.30"><output id="o_zoom"></output></div>
+    <div class="row"><label>expo</label><input id="expo" type="range" min="0.4" max="2.0" step="0.01" value="1.00"><output id="o_expo"></output></div>
+    <div class="row"><label>fov</label><input id="fov" type="range" min="0.6" max="2.0" step="0.01" value="1.15"><output id="o_fov"></output></div>
+    <div class="row"><label>t</label><input id="t" type="range" min="0" max="60" step="0.04" value="0"><output id="o_t"></output></div>
+    <div id="bar">
+      <button id="png">PNG 저장</button>
+      <button id="link">이 각도 링크 복사</button>
+      <span>같은 값 → 같은 그림. <code>t</code> 만 원반 회전을 돌립니다(그림자·링은 안 변합니다).</span>
+    </div>
+  </div>
+</div>
+<script src="lens_engine.js"></script>
+<script>
+/* 최소 뷰어 — 슬라이더 값 하나하나가 셰이더 uniform 이다. 애니메이션 루프 없음(입력 때만 그린다).
+   같은 값이면 언제나 같은 그림이 나온다 = 이 저장소의 요지. */
+(function () {
+  'use strict';
+  const cv = document.getElementById('cv');
+  const lens = window.LensEngine.create(cv);
+  const D2R = Math.PI / 180;
+  const K = ['incl', 'az', 'zoom', 'expo', 'fov', 't'];
+  const el = {}; K.forEach(k => { el[k] = document.getElementById(k); el['o_' + k] = document.getElementById('o_' + k); });
+
+  function draw() {
+    const v = {};
+    K.forEach(k => { v[k] = parseFloat(el[k].value); el['o_' + k].textContent = el[k].value; });
+    lens.render({ t: v.t, incl: v.incl * D2R, az: v.az * D2R, zoom: v.zoom,
+                  expo: v.expo, fov: v.fov, form: 1.0, star: 1.0, shake: [0, 0] });
+    const q = K.map(k => k + '=' + el[k].value).join('&');
+    history.replaceState(null, '', '#' + q);
+  }
+  K.forEach(k => el[k].addEventListener('input', draw));
+
+  // 링크로 각도를 그대로 주고받는다
+  const h = new URLSearchParams(location.hash.slice(1));
+  K.forEach(k => { if (h.has(k)) el[k].value = h.get(k); });
+
+  document.getElementById('png').onclick = () => {
+    const a = document.createElement('a');
+    a.download = 'blackhole_' + K.map(k => k + el[k].value).join('_') + '.png';
+    a.href = cv.toDataURL('image/png'); a.click();
+  };
+  document.getElementById('link').onclick = () => {
+    navigator.clipboard && navigator.clipboard.writeText(location.href);
+  };
+  draw();
+})();
+</script>
